@@ -1,0 +1,41 @@
+# Example Compose file for deploying Ninmu with the published image.
+#
+# Usage:
+#   cp example.env .env   # fill in the required credentials
+#   docker compose up -d
+#
+# Mirrors the production deployment in hako (services/agent/ninmu):
+# published image, fixed container name, health check via /healthz.
+
+services:
+  ninmu:
+    image: ghcr.io/divin/ninmu:latest
+    container_name: ninmu
+    restart: unless-stopped
+    environment:
+      VIKUNJA_URL: ${VIKUNJA_URL:?Set VIKUNJA_URL in .env}
+      VIKUNJA_TOKEN: ${VIKUNJA_TOKEN:?Set VIKUNJA_TOKEN in .env}
+      NOTEDISCOVERY_URL: ${NOTEDISCOVERY_URL:?Set NOTEDISCOVERY_URL in .env}
+      NOTEDISCOVERY_API_KEY: ${NOTEDISCOVERY_API_KEY:?Set NOTEDISCOVERY_API_KEY in .env}
+      # Optional: set to require a bearer token on MCP endpoints.
+      NINMU_AUTH_TOKEN: ${NINMU_AUTH_TOKEN:-}
+      LIST_DEFAULT_LIMIT: ${LIST_DEFAULT_LIMIT:-20}
+      LIST_MAX_LIMIT: ${LIST_MAX_LIMIT:-100}
+      TZ: Europe/Berlin
+    ports:
+      - "${NINMU_PORT:-9093}:3000"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:3000/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 30s
+    # Shared network for other agent services. Remove this block
+    # (and the networks: section below) for a standalone deployment.
+    networks:
+      - agents
+
+networks:
+  agents:
+    name: agents
+    external: true
