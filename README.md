@@ -76,6 +76,8 @@ just run      # run the server locally (uses .env)
 
 ## Configuration
 
-See `example.env` for every variable: `VIKUNJA_URL`/`VIKUNJA_TOKEN`,
-`NOTEDISCOVERY_URL`/`NOTEDISCOVERY_API_KEY` (required), plus optional
-`NINMU_AUTH_TOKEN`, `LIST_DEFAULT_LIMIT`, `LIST_MAX_LIMIT`, `CORS_ORIGINS`.
+See `example.env` for every variable: `VIKUNJA_URL`/`VIKUNJA_TOKEN`
+(required), `NOTEDISCOVERY_URL` (required) and `NOTEDISCOVERY_API_KEY`
+(optional — omit when NoteDiscovery runs without authentication), plus
+optional `NINMU_AUTH_TOKEN`, `LIST_DEFAULT_LIMIT`, `LIST_MAX_LIMIT`,
+`CORS_ORIGINS`.

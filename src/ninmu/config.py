@@ -30,19 +30,14 @@ class Config:
     list_max_limit: int
 
     def validate(self) -> None:
-        """Require URLs and tokens for both upstreams (fail-fast)."""
-        missing = [
-            name
-            for name, value in (
-                ("VIKUNJA_TOKEN", self.vikunja_token),
-                ("NOTEDISCOVERY_API_KEY", self.notediscovery_api_key),
-            )
-            if not value
-        ]
-        if missing:
-            raise ConfigError(
-                f"Upstream credentials incomplete, missing: {', '.join(missing)}"
-            )
+        """Require the Vikunja token and both URLs (fail-fast).
+
+        ``NOTEDISCOVERY_API_KEY`` is optional: a NoteDiscovery instance may
+        run without authentication, in which case the client sends no
+        ``X-API-Key`` header.
+        """
+        if not self.vikunja_token:
+            raise ConfigError("Upstream credentials incomplete, missing: VIKUNJA_TOKEN")
         if not self.vikunja_url:
             raise ConfigError("VIKUNJA_URL is required")
         if not self.notediscovery_url:
