@@ -226,3 +226,18 @@ async def test_move_note_posts_old_and_new_path(httpx_mock, client):
         "newPath": "published/final.md",
     }
     assert result["success"] is True
+
+
+async def test_delete_note_sends_delete_to_note_path(httpx_mock, client):
+    httpx_mock.add_response(
+        method="DELETE",
+        url=f"{BASE_URL}/api/notes/Projects/old-idea.md",
+        json={"success": True, "message": "Note deleted successfully"},
+    )
+    result = await client.delete_note("Projects/old-idea.md")
+
+    request = httpx_mock.get_requests()[0]
+    assert request.method == "DELETE"
+    assert request.url.path.endswith("/api/notes/Projects/old-idea.md")
+    _assert_api_key(request)
+    assert result["success"] is True

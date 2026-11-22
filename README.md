@@ -3,7 +3,7 @@
 Self-hosted MCP server exposing a **focused tool set** for [Vikunja](https://vikunja.io)
 tasks and [NoteDiscovery](https://github.com/gamosoft/NoteDiscovery) notes.
 Built for local LLMs with small context windows: instead of the ~80 tools the
-upstreams' own MCP servers expose, Ninmu offers exactly **14 terse tools** whose
+upstreams' own MCP servers expose, Ninmu offers exactly **21 terse tools** whose
 responses are short, pre-summarized strings.
 
 Ninmu talks to both upstreams through their plain REST APIs — it does not proxy
@@ -17,8 +17,14 @@ their MCP endpoints.
 | `bucket_list` | List a project's kanban buckets (the valid "statuses") with ids |
 | `task_create` | Create a task in a project (title, optional description and due date) |
 | `task_list` | Find tasks (search text, bucket filter, done hidden by default) |
+| `task_get` | Fetch one task by id (title, description, due date, bucket, priority) |
+| `task_update` | Update a task's title, description, due date, or priority |
 | `task_set_bucket` | Change a task's status by moving it to a kanban bucket |
+| `task_set_done` | Mark a task done, or reopen it |
 | `task_comment` | Add a comment to a task |
+| `task_delete` | Permanently delete a task by id |
+| `task_search` | Search tasks across ALL projects by text (finds the project for you) |
+| `task_overview` | Overdue + due-today + due-within-N-days tasks across all projects |
 | `folder_list` | List note folders with note counts |
 | `note_list` | List notes in a folder (paginated, default 20) |
 | `note_get` | Read a note's full markdown content by path (long notes clipped) |
@@ -27,6 +33,7 @@ their MCP endpoints.
 | `note_append` | Append content to an existing note (optional timestamp) |
 | `note_edit` | Replace one exact occurrence of text in a note |
 | `note_move` | Move or rename a note |
+| `note_delete` | Permanently delete a note by path |
 
 Responses are terse ("Created task #123 \"Fix garage door\" in project 1."),
 list endpoints default to 20 items with a hard max of 100 and tell you when

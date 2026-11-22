@@ -156,3 +156,7 @@ class NoteDiscoveryClient:
         return await self._request(
             "POST", "/api/notes/move", json={"oldPath": old_path, "newPath": new_path}
         )
+
+    async def delete_note(self, path: str) -> dict:
+        """Permanently delete a note."""
+        return await self._request("DELETE", f"/api/notes/{path.lstrip('/')}")

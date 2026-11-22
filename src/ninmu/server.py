@@ -1,10 +1,10 @@
-"""FastMCP server assembly: 12 focused tools over two upstream APIs."""
+"""FastMCP server assembly: 21 focused tools over two upstream APIs."""
 
 from __future__ import annotations
 
 import re
 import textwrap
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from fastmcp import FastMCP
@@ -14,14 +14,23 @@ from starlette.responses import JSONResponse
 
 from ninmu.auth import StaticTokenVerifier
 from ninmu.clients.notediscovery import NoteDiscoveryClient, UpstreamError
-from ninmu.clients.vikunja import VikunjaClient
+from ninmu.clients.vikunja import NoKanbanView, VikunjaClient
 from ninmu.config import Config
+
+# Vikunja priority numbers, for terse display in task lists.
+_PRIORITY_NAMES = {1: "low", 2: "medium", 3: "high", 4: "urgent", 5: "do-now"}
 
 
 async def _guard(awaitable):
-    """Await an upstream call, turning UpstreamError into a ToolError."""
+    """Await an upstream call, turning UpstreamError into a ToolError.
+
+    NoKanbanView is re-raised as-is so callers can respond with a
+    friendlier message than a generic upstream failure.
+    """
     try:
         return await awaitable
+    except NoKanbanView:
+        raise
     except UpstreamError as e:
         raise ToolError(str(e)) from e
 
@@ -52,6 +61,24 @@ def _validate_limit(limit: int, config: Config) -> int:
     return min(limit, config.list_max_limit)
 
 
+def _format_task_line(task: dict) -> str:
+    """Format one task as a terse list line shared by all task list views."""
+    line = f"- #{task['id']} {task.get('title', '(untitled)')}"
+    if task.get("project_id"):
+        line += f" (project #{task['project_id']})"
+    # bucket_id 0/None means "no bucket", so only show real ones.
+    if task.get("bucket_id"):
+        line += f" [bucket #{task['bucket_id']}]"
+    if task.get("due_date"):
+        line += f" due {task['due_date'][:10]}"
+    priority = task.get("priority")
+    if priority:
+        line += f" [{_PRIORITY_NAMES.get(priority, f'p{priority}')}]"
+    if task.get("done"):
+        line += " (done)"
+    return line
+
+
 def _validate_due_date(due_date: str | None) -> str | None:
     """Normalize an ISO date/datetime string for Vikunja."""
     if due_date is None:
@@ -64,6 +91,9 @@ def _validate_due_date(due_date: str | None) -> str | None:
         ) from e
     if "T" not in due_date:
         parsed = parsed.replace(hour=0, minute=0)
+    if parsed.tzinfo is None:
+        # Vikunja rejects timezone-less datetimes (HTTP 400), so assume UTC.
+        parsed = parsed.replace(tzinfo=UTC)
     return parsed.isoformat()
 
 
@@ -72,7 +102,7 @@ def build_server(
     vikunja: Any | None = None,
     notediscovery: Any | None = None,
 ) -> FastMCP:
-    """Build the FastMCP server with all 14 tools.
+    """Build the FastMCP server with all 21 tools.
 
     Parameters
     ----------
@@ -107,13 +137,15 @@ def build_server(
             Focused tools for two homelab services:
 
             Vikunja (tasks): `project_list`, `bucket_list`, `task_create`,
-            `task_list`, `task_set_bucket`, `task_comment`.
+            `task_list`, `task_get`, `task_update`, `task_set_bucket`,
+            `task_set_done`, `task_comment`, `task_delete`, `task_search`,
+            `task_overview`.
             A task's "status" is its kanban bucket. Discover valid buckets
             with `bucket_list`, then move a task with `task_set_bucket`.
 
             NoteDiscovery (notes): `folder_list`, `note_list`, `note_get`,
             `note_search`, `note_create`, `note_append`, `note_edit`,
-            `note_move`.
+            `note_move`, `note_delete`.
             `note_list` and `note_search` are paginated; use `folder` to
             scope them and keep `limit` small — responses are terse to save
             context space.
@@ -142,7 +174,13 @@ def build_server(
         description="List the kanban buckets (valid task statuses) of a project, with ids.",
     )
     async def bucket_list(project_id: int) -> str:
-        buckets = await _guard(vikunja.list_buckets(project_id))
+        try:
+            buckets = await _guard(vikunja.list_buckets(project_id))
+        except NoKanbanView:
+            return (
+                f"Project {project_id} has no kanban view, so there are "
+                "no buckets to list."
+            )
         lines = [f"- #{b['id']} {b['title']} ({b['count']} tasks)" for b in buckets]
         return f"Buckets for project {project_id}:\n" + "\n".join(lines)
 
@@ -155,16 +193,25 @@ def build_server(
         title: str,
         description: str | None = None,
         due_date: str | None = None,
+        bucket_id: int | None = None,
     ) -> str:
         due = _validate_due_date(due_date)
         task = await _guard(
             vikunja.create_task(
-                project_id, title, description=description, due_date=due
+                project_id,
+                title,
+                description=description,
+                due_date=due,
+                bucket_id=bucket_id,
             )
         )
         extras = [
             part
-            for part in (description and "description set", due and f"due {due}")
+            for part in (
+                description and "description set",
+                due and f"due {due}",
+                bucket_id is not None and f"bucket #{bucket_id}",
+            )
             if part
         ]
         suffix = f" ({'; '.join(extras)})" if extras else ""
@@ -198,12 +245,7 @@ def build_server(
         )
         if not tasks:
             return "No matching tasks."
-        lines = [
-            f"- #{t['id']} {t.get('title', '(untitled)')}"
-            + (f" [bucket #{t['bucket_id']}]" if t.get("bucket_id") is not None else "")
-            + (" (done)" if t.get("done") else "")
-            for t in tasks
-        ]
+        lines = [_format_task_line(t) for t in tasks]
         notice = (
             "\n(limit reached — refine with search/bucket_id, or pass a larger limit)"
             if len(tasks) >= limit
@@ -226,6 +268,157 @@ def build_server(
     async def task_comment(task_id: int, comment: str) -> str:
         await _guard(vikunja.add_comment(task_id, comment))
         return f"Comment added to task #{task_id}."
+
+    @mcp.tool(
+        name="task_search",
+        description=(
+            "Search tasks across ALL projects by text (title/description). "
+            "Use when you know what the task says but not which project holds it. "
+            "Optional: include_done, limit."
+        ),
+    )
+    async def task_search(
+        query: str, include_done: bool = False, limit: int | None = None
+    ) -> str:
+        limit = _validate_limit(
+            limit if limit is not None else config.list_default_limit, config
+        )
+        tasks = await _guard(
+            vikunja.search_tasks(query, limit=limit, include_done=include_done)
+        )
+        if not tasks:
+            return f'No tasks matching "{query}".'
+        lines = [_format_task_line(t) for t in tasks]
+        notice = (
+            "\n(limit reached — refine the query, or pass a larger limit)"
+            if len(tasks) >= limit
+            else ""
+        )
+        return f'Tasks matching "{query}":\n' + "\n".join(lines) + notice
+
+    @mcp.tool(
+        name="task_overview",
+        description=(
+            "Show open tasks that are overdue, due today, or due within the "
+            "next days (default 7) across ALL projects."
+        ),
+    )
+    async def task_overview(days: int = 7) -> str:
+        if not 1 <= days <= 30:
+            raise ToolError("days must be between 1 and 30.")
+        tasks = await _guard(
+            vikunja.search_tasks(
+                filter_expr=f"due_date < now+{days}d",
+                limit=100,
+                sort_by="due_date",
+            )
+        )
+        if not tasks:
+            return f"No overdue tasks and nothing due in the next {days} days."
+
+        now = datetime.now().astimezone()
+        buckets: dict[str, list[str]] = {"overdue": [], "today": [], "upcoming": []}
+        for t in tasks:
+            try:
+                due = datetime.fromisoformat(t["due_date"])
+            except (KeyError, ValueError):
+                # A task without a usable due_date cannot be placed in a
+                # time bucket; the server-side filter should exclude it.
+                continue
+            if due < now:
+                buckets["overdue"].append(_format_task_line(t))
+            elif due.date() == now.date():
+                buckets["today"].append(_format_task_line(t))
+            else:
+                buckets["upcoming"].append(_format_task_line(t))
+
+        sections = [
+            (title, lines)
+            for title, lines in (
+                ("Overdue:", buckets["overdue"]),
+                ("Due today:", buckets["today"]),
+                (f"Due within {days} days:", buckets["upcoming"]),
+            )
+            if lines
+        ]
+        return "Task overview:\n" + "\n".join(
+            title + "\n" + "\n".join(lines) for title, lines in sections
+        )
+
+    @mcp.tool(
+        name="task_get",
+        description="Fetch one Vikunja task by id: title, description, due date, bucket, priority, done.",
+    )
+    async def task_get(task_id: int) -> str:
+        task = await _guard(vikunja.get_task(task_id))
+        lines = [f"Task #{task['id']}: {task.get('title', '(untitled)')}"]
+        if task.get("done"):
+            lines.append("Status: done")
+        if task.get("due_date"):
+            lines.append(f"Due: {task['due_date'][:10]}")
+        if task.get("bucket_id"):
+            lines.append(f"Bucket: #{task['bucket_id']}")
+        priority = task.get("priority")
+        if priority:
+            lines.append(f"Priority: {_PRIORITY_NAMES.get(priority, f'p{priority}')}")
+        description = task.get("description")
+        if description:
+            lines.extend(["", description])
+        return "\n".join(lines)
+
+    @mcp.tool(
+        name="task_update",
+        description=(
+            "Update a Vikunja task. Only provided fields change. "
+            "priority: 1 low, 2 medium, 3 high, 4 urgent, 5 do-now. "
+            "due_date: ISO date, e.g. 2026-04-01."
+        ),
+    )
+    async def task_update(
+        task_id: int,
+        title: str | None = None,
+        description: str | None = None,
+        due_date: str | None = None,
+        priority: int | None = None,
+    ) -> str:
+        due = _validate_due_date(due_date)
+        await _guard(
+            vikunja.update_task(
+                task_id,
+                title=title,
+                description=description,
+                due_date=due,
+                priority=priority,
+            )
+        )
+        changed = [
+            name
+            for name, value in (
+                ("title", title),
+                ("description", description),
+                ("due_date", due),
+                ("priority", priority),
+            )
+            if value is not None
+        ]
+        return f"Task #{task_id} updated ({', '.join(changed)})."
+
+    @mcp.tool(
+        name="task_set_done",
+        description="Mark a Vikunja task done (default) or reopen it with done=false.",
+    )
+    async def task_set_done(task_id: int, done: bool = True) -> str:
+        await _guard(vikunja.set_task_done(task_id, done))
+        state = "done" if done else "reopened"
+        return f"Task #{task_id} marked {state}."
+
+    @mcp.tool(
+        name="task_delete",
+        description="Permanently delete a Vikunja task by id. There is no undo.",
+    )
+    async def task_delete(task_id: int) -> str:
+        await _guard(vikunja.delete_task(task_id))
+        return f"Task #{task_id} deleted."
 
     # --- NoteDiscovery tools --------------------------------------------
 
@@ -308,20 +501,34 @@ def build_server(
         return f"Moved note {old_path} → {new_path}."
 
     @mcp.tool(
+        name="note_delete",
+        description="Permanently delete a note by path. There is no undo.",
+    )
+    async def note_delete(path: str) -> str:
+        await _guard(notediscovery.delete_note(path))
+        return f"Deleted note {path}."
+
+    @mcp.tool(
         name="note_get",
         description="Read a note's full markdown content by path. Very long notes are clipped.",
     )
-    async def note_get(path: str) -> str:
+    async def note_get(path: str, offset: int = 0) -> str:
         note = await _guard(notediscovery.get_note(path))
         content = note.get("content", "")
-        if len(content) > NOTE_GET_MAX_CHARS:
+        start = max(offset, 0)
+        if start > 0 and start >= len(content):
+            return (
+                f"Offset {start} is past the end of the note ({len(content):,} chars)."
+            )
+        window = content[start : start + NOTE_GET_MAX_CHARS]
+        if start + len(window) < len(content):
+            next_offset = start + NOTE_GET_MAX_CHARS
             total = f"{len(content):,}"
             return (
-                content[:NOTE_GET_MAX_CHARS]
-                + f"\n\n... (clipped; note is {total} chars — use note_edit "
-                "or note_append to work with the rest)"
+                window + f"\n\n[...clipped — {total} chars total, showing "
+                f"{start}:{next_offset}; pass offset={next_offset} to continue]"
             )
-        return content
+        return window
 
     @mcp.tool(
         name="note_search",

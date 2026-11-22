@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 
+import httpx
 import pytest
 
 from ninmu.clients.vikunja import VikunjaClient
@@ -106,20 +107,160 @@ async def test_create_task_omits_unset_fields(httpx_mock, client):
     assert body == {"title": "Minimal"}
 
 
-async def test_set_bucket_posts_bucket_id(httpx_mock, client):
+async def test_create_task_passes_bucket_id(httpx_mock, client):
     httpx_mock.add_response(
-        method="POST",
+        method="PUT",
+        url=f"{BASE_URL}/api/v1/projects/1/tasks",
+        json={"id": 125, "title": "Bucketed", "bucket_id": 6},
+    )
+    await client.create_task(1, "Bucketed", bucket_id=6)
+
+    body = json.loads(httpx_mock.get_requests()[0].content)
+    assert body == {"title": "Bucketed", "bucket_id": 6}
+
+
+async def test_search_tasks_sends_query_and_done_filter(httpx_mock, client):
+    url = str(
+        httpx.URL(f"{BASE_URL}/api/v1/tasks").copy_merge_params(
+            {"s": "garage", "filter": "done = false", "per_page": "20"}
+        )
+    )
+    httpx_mock.add_response(
+        method="GET",
+        url=url,
+        json=[{"id": 1, "title": "Fix garage door", "project_id": 14}],
+    )
+    tasks = await client.search_tasks("garage", limit=20)
+
+    request = httpx_mock.get_requests()[0]
+    assert request.url.path.endswith("/api/v1/tasks")
+    _assert_bearer_header(request)
+    assert request.url.params["s"] == "garage"
+    assert request.url.params["filter"] == "done = false"
+    assert request.url.params["per_page"] == "20"
+    assert tasks[0]["id"] == 1
+
+
+async def test_search_tasks_omits_filter_when_including_done(httpx_mock, client):
+    url = str(
+        httpx.URL(f"{BASE_URL}/api/v1/tasks").copy_merge_params(
+            {"s": "garage", "per_page": "100"}
+        )
+    )
+    httpx_mock.add_response(method="GET", url=url, json=[])
+    await client.search_tasks("garage", include_done=True)
+
+    request = httpx_mock.get_requests()[0]
+    assert "filter" not in request.url.params
+
+
+async def test_search_tasks_passes_filter_expression_and_sort(httpx_mock, client):
+    url = str(
+        httpx.URL(f"{BASE_URL}/api/v1/tasks").copy_merge_params(
+            {
+                "filter": "done = false && due_date < now+7d",
+                "per_page": "100",
+                "sort_by": "due_date",
+            }
+        )
+    )
+    httpx_mock.add_response(method="GET", url=url, json=[])
+    await client.search_tasks(
+        filter_expr="due_date < now+7d",
+        limit=100,
+        sort_by="due_date",
+    )
+
+    request = httpx_mock.get_requests()[0]
+    assert request.url.params["filter"] == "done = false && due_date < now+7d"
+    assert request.url.params["per_page"] == "100"
+    assert request.url.params["sort_by"] == "due_date"
+    assert "s" not in request.url.params
+
+
+async def test_set_bucket_puts_bucket_id(httpx_mock, client):
+    httpx_mock.add_response(
+        method="PUT",
         url=f"{BASE_URL}/api/v1/tasks/123",
         json={"id": 123, "bucket_id": 6},
     )
     task = await client.set_bucket(123, 6)
 
     request = httpx_mock.get_requests()[0]
-    assert request.method == "POST"
+    assert request.method == "PUT"
     assert request.url.path.endswith("/tasks/123")
     _assert_bearer_header(request)
     assert json.loads(request.content) == {"bucket_id": 6}
     assert task["bucket_id"] == 6
+
+
+async def test_list_buckets_raises_no_kanban_view_when_none_exists(httpx_mock, client):
+    from ninmu.clients.vikunja import NoKanbanView
+
+    httpx_mock.add_response(
+        method="GET",
+        url=f"{BASE_URL}/api/v1/projects/1/views",
+        json=[{"id": 11, "view_kind": "list"}],
+    )
+    with pytest.raises(NoKanbanView):
+        await client.list_buckets(1)
+
+
+async def test_get_task_fetches_by_id(httpx_mock, client):
+    httpx_mock.add_response(
+        method="GET",
+        url=f"{BASE_URL}/api/v1/tasks/123",
+        json={"id": 123, "title": "Fix garage door", "done": False},
+    )
+    task = await client.get_task(123)
+
+    request = httpx_mock.get_requests()[0]
+    assert request.method == "GET"
+    assert request.url.path.endswith("/tasks/123")
+    _assert_bearer_header(request)
+    assert task["id"] == 123
+
+
+async def test_update_task_puts_only_provided_fields(httpx_mock, client):
+    httpx_mock.add_response(
+        method="PUT",
+        url=f"{BASE_URL}/api/v1/tasks/123",
+        json={"id": 123, "title": "Renamed", "priority": 3},
+    )
+    await client.update_task(123, title="Renamed", priority=3)
+
+    request = httpx_mock.get_requests()[0]
+    assert request.method == "PUT"
+    assert request.url.path.endswith("/tasks/123")
+    _assert_bearer_header(request)
+    assert json.loads(request.content) == {"title": "Renamed", "priority": 3}
+
+
+async def test_set_task_done_puts_done_flag(httpx_mock, client):
+    httpx_mock.add_response(
+        method="PUT",
+        url=f"{BASE_URL}/api/v1/tasks/123",
+        json={"id": 123, "done": True},
+    )
+    await client.set_task_done(123, True)
+
+    request = httpx_mock.get_requests()[0]
+    assert request.method == "PUT"
+    assert json.loads(request.content) == {"done": True}
+
+
+async def test_delete_task_sends_delete(httpx_mock, client):
+    httpx_mock.add_response(
+        method="DELETE",
+        url=f"{BASE_URL}/api/v1/tasks/123",
+        json={"message": "ok"},
+    )
+    await client.delete_task(123)
+
+    request = httpx_mock.get_requests()[0]
+    assert request.method == "DELETE"
+    assert request.url.path.endswith("/tasks/123")
+    _assert_bearer_header(request)
 
 
 async def test_add_comment_puts_comment_text(httpx_mock, client):
