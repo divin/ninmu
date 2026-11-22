@@ -1,6 +1,6 @@
 [project]
 name = "ninmu"
-version = "1.0.0"
+version = "1.0.1"
 description = "Self-hosted MCP server exposing a focused tool set for Vikunja tasks and NoteDiscovery notes"
 readme = "README.md"
 authors = [
