@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import textwrap
 from datetime import datetime
 from typing import Any
@@ -23,6 +24,15 @@ async def _guard(awaitable):
         return await awaitable
     except UpstreamError as e:
         raise ToolError(str(e)) from e
+
+
+# Upper bound for note_get output: a full note can dwarf a small local
+# model's context, so long contents are clipped with a notice.
+NOTE_GET_MAX_CHARS = 4000
+
+# NoteDiscovery wraps search hits in this tag to highlight them in the UI.
+_SEARCH_MARK_OPEN = '<mark class="search-highlight">'
+_SEARCH_MARK_CLOSE = "</mark>"
 
 
 def _clip(item_count: int, limit: int) -> str:
@@ -62,7 +72,7 @@ def build_server(
     vikunja: Any | None = None,
     notediscovery: Any | None = None,
 ) -> FastMCP:
-    """Build the FastMCP server with all 12 tools.
+    """Build the FastMCP server with all 14 tools.
 
     Parameters
     ----------
@@ -101,10 +111,12 @@ def build_server(
             A task's "status" is its kanban bucket. Discover valid buckets
             with `bucket_list`, then move a task with `task_set_bucket`.
 
-            NoteDiscovery (notes): `folder_list`, `note_list`, `note_create`,
-            `note_append`, `note_edit`, `note_move`.
-            `note_list` is paginated; use `folder` to scope it and keep
-            `limit` small — responses are terse to save context space.
+            NoteDiscovery (notes): `folder_list`, `note_list`, `note_get`,
+            `note_search`, `note_create`, `note_append`, `note_edit`,
+            `note_move`.
+            `note_list` and `note_search` are paginated; use `folder` to
+            scope them and keep `limit` small — responses are terse to save
+            context space.
             """),
     )
 
@@ -294,5 +306,60 @@ def build_server(
     async def note_move(old_path: str, new_path: str) -> str:
         await _guard(notediscovery.move_note(old_path, new_path))
         return f"Moved note {old_path} → {new_path}."
+
+    @mcp.tool(
+        name="note_get",
+        description="Read a note's full markdown content by path. Very long notes are clipped.",
+    )
+    async def note_get(path: str) -> str:
+        note = await _guard(notediscovery.get_note(path))
+        content = note.get("content", "")
+        if len(content) > NOTE_GET_MAX_CHARS:
+            total = f"{len(content):,}"
+            return (
+                content[:NOTE_GET_MAX_CHARS]
+                + f"\n\n... (clipped; note is {total} chars — use note_edit "
+                "or note_append to work with the rest)"
+            )
+        return content
+
+    @mcp.tool(
+        name="note_search",
+        description=(
+            "Full-text search across note contents. Returns paths with line "
+            "numbers and context snippets. Optional: folder filter and pagination."
+        ),
+    )
+    async def note_search(
+        query: str,
+        folder: str | None = None,
+        limit: int | None = None,
+        offset: int | None = None,
+    ) -> str:
+        limit = _validate_limit(
+            limit if limit is not None else config.list_default_limit, config
+        )
+        result = await _guard(
+            notediscovery.search_notes(query, folder=folder, limit=limit, offset=offset)
+        )
+        results = result.get("results", [])
+        if not results:
+            return f'No notes matching "{query}".'
+        lines = []
+        for hit in results:
+            for match in hit.get("matches", []):
+                context = match.get("context", "")
+                context = context.replace(_SEARCH_MARK_OPEN, "").replace(
+                    _SEARCH_MARK_CLOSE, ""
+                )
+                context = re.sub(r"\s+", " ", context).strip()
+                lines.append(
+                    f"- {hit['path']} L{match.get('line_number', '?')}: {context}"
+                )
+        header = f'Search "{query}":'
+        pagination = result.get("pagination")
+        total = pagination.get("total") if isinstance(pagination, dict) else None
+        notice = _clip(total, limit) if isinstance(total, int) else ""
+        return header + "\n" + "\n".join(lines) + notice
 
     return mcp

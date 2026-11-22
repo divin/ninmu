@@ -71,6 +71,32 @@ class NoteDiscoveryClient:
             for path, count in sorted(counts.items())
         ]
 
+    async def get_note(self, path: str) -> dict:
+        """Read one note's full content (plus metadata and backlinks)."""
+        return await self._request("GET", f"/api/notes/{path.lstrip('/')}")
+
+    async def search_notes(
+        self,
+        query: str,
+        folder: str | None = None,
+        limit: int | None = None,
+        offset: int | None = None,
+        recursive: bool = True,
+    ) -> dict:
+        """Full-text search across note contents, optionally scoped to a folder.
+
+        Results carry ``matches`` entries with line numbers and context
+        snippets. Pagination metadata appears only when ``limit`` is given.
+        """
+        params: dict = {"q": query, "recursive": recursive}
+        if folder:
+            params["folder"] = folder
+        if limit is not None:
+            params["limit"] = limit
+        if offset is not None:
+            params["offset"] = offset
+        return await self._request("GET", "/api/search", params=params)
+
     async def list_notes(
         self,
         folder: str | None = None,

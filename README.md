@@ -3,7 +3,7 @@
 Self-hosted MCP server exposing a **focused tool set** for [Vikunja](https://vikunja.io)
 tasks and [NoteDiscovery](https://github.com/gamosoft/NoteDiscovery) notes.
 Built for local LLMs with small context windows: instead of the ~80 tools the
-upstreams' own MCP servers expose, Ninmu offers exactly **12 terse tools** whose
+upstreams' own MCP servers expose, Ninmu offers exactly **14 terse tools** whose
 responses are short, pre-summarized strings.
 
 Ninmu talks to both upstreams through their plain REST APIs — it does not proxy
@@ -21,6 +21,8 @@ their MCP endpoints.
 | `task_comment` | Add a comment to a task |
 | `folder_list` | List note folders with note counts |
 | `note_list` | List notes in a folder (paginated, default 20) |
+| `note_get` | Read a note's full markdown content by path (long notes clipped) |
+| `note_search` | Full-text search across notes (paths, line numbers, snippets) |
 | `note_create` | Create a note (folder + name + content, optional tags) |
 | `note_append` | Append content to an existing note (optional timestamp) |
 | `note_edit` | Replace one exact occurrence of text in a note |

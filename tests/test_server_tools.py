@@ -101,6 +101,37 @@ class FakeNoteDiscovery:
         self.calls.append(("move_note", old_path, new_path))
         return {"success": True, "oldPath": old_path, "newPath": new_path}
 
+    async def get_note(self, path):
+        self.calls.append(("get_note", path))
+        return {
+            "path": path,
+            "content": "# Alpha\n\nBody text here.",
+            "metadata": {},
+        }
+
+    async def search_notes(
+        self, query, folder=None, limit=None, offset=None, recursive=True
+    ):
+        self.calls.append(("search_notes", query, folder, limit, offset, recursive))
+        return {
+            "results": [
+                {
+                    "name": "docker-setup",
+                    "path": "Projects/docker-setup.md",
+                    "folder": "Projects",
+                    "matches": [
+                        {
+                            "line_number": 14,
+                            "context": 'run <mark class="search-highlight">compose</mark> up',
+                        },
+                        {"line_number": 40, "context": "second hit"},
+                    ],
+                }
+            ],
+            "query": query,
+            "pagination": {"total": 1, "limit": 20, "offset": 0, "has_more": False},
+        }
+
 
 @pytest.fixture
 def config() -> Config:
@@ -242,6 +273,46 @@ async def test_note_edit_passes_exact_strings(client, fakes):
     )
     assert fakes[1].calls[-1] == ("edit_note", "Projects/alpha.md", "March", "April")
     assert "Updated" in result.content[0].text
+
+
+async def test_note_get_returns_content(client, fakes):
+    result = await _call(client, "note_get", path="Projects/alpha.md")
+    text = result.content[0].text
+    assert "# Alpha" in text and "Body text here." in text
+    assert fakes[1].calls[-1] == ("get_note", "Projects/alpha.md")
+
+
+async def test_note_get_clips_very_long_content(config, fakes):
+    class LongNote(FakeNoteDiscovery):
+        async def get_note(self, path):
+            return {"path": path, "content": "x" * 10_000, "metadata": {}}
+
+    vikunja, _ = fakes
+    mcp = build_server(config, vikunja=vikunja, notediscovery=LongNote())
+    async with Client(mcp) as c:
+        result = await _call(c, "note_get", path="big.md")
+    text = result.content[0].text
+    assert len(text) < 10_000
+    assert "10,000" in text
+
+
+async def test_note_search_formats_matches_and_strips_markup(client, fakes):
+    result = await _call(client, "note_search", query="compose")
+    text = result.content[0].text
+    assert "Projects/docker-setup.md" in text
+    assert "L14" in text and "L40" in text
+    assert "compose up" in text
+    assert "<mark>" not in text
+
+
+async def test_note_search_passes_folder_and_default_limit(client, fakes):
+    await _call(client, "note_search", query="compose", folder="Projects")
+    assert fakes[1].calls[-1] == ("search_notes", "compose", "Projects", 20, None, True)
+
+
+async def test_note_search_caps_limit_at_max(client, fakes):
+    await _call(client, "note_search", query="compose", limit=500)
+    assert fakes[1].calls[-1][3] == 100
 
 
 async def test_note_move_reports_paths(client, fakes):

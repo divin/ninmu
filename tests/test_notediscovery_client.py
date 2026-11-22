@@ -44,6 +44,60 @@ async def test_list_folders_derives_from_graph_nodes(httpx_mock, client):
     ]
 
 
+async def test_get_note_returns_content(httpx_mock, client):
+    httpx_mock.add_response(
+        method="GET",
+        url=f"{BASE_URL}/api/notes/Projects/alpha.md",
+        json={
+            "path": "Projects/alpha.md",
+            "content": "# Alpha\nBody text",
+            "metadata": {},
+        },
+    )
+    result = await client.get_note("Projects/alpha.md")
+
+    request = httpx_mock.get_requests()[0]
+    _assert_api_key(request)
+    assert request.url.path.endswith("/api/notes/Projects/alpha.md")
+    assert result["content"] == "# Alpha\nBody text"
+
+
+async def test_search_notes_passes_query_and_filters(httpx_mock, client):
+    httpx_mock.add_response(
+        method="GET",
+        url=f"{BASE_URL}/api/search?q=docker&folder=Projects&limit=5&offset=10&recursive=true",
+        json={
+            "results": [
+                {
+                    "name": "docker-setup",
+                    "path": "Projects/docker-setup.md",
+                    "folder": "Projects",
+                    "matches": [{"line_number": 14, "context": "run docker compose"}],
+                }
+            ],
+            "query": "docker",
+            "pagination": {"total": 1, "limit": 5, "offset": 10, "has_more": False},
+        },
+    )
+    result = await client.search_notes("docker", folder="Projects", limit=5, offset=10)
+
+    request = httpx_mock.get_requests()[0]
+    _assert_api_key(request)
+    assert request.url.params["q"] == "docker"
+    assert result["results"][0]["path"] == "Projects/docker-setup.md"
+
+
+async def test_search_notes_with_only_query_omits_optional_params(httpx_mock, client):
+    httpx_mock.add_response(
+        method="GET",
+        url=f"{BASE_URL}/api/search?q=docker&recursive=true",
+        json={"results": [], "query": "docker"},
+    )
+    result = await client.search_notes("docker")
+
+    assert result["results"] == []
+
+
 async def test_list_notes_passes_pagination_and_folder(httpx_mock, client):
     httpx_mock.add_response(
         method="GET",
