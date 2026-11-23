@@ -122,7 +122,7 @@ async def test_create_task_passes_bucket_id(httpx_mock, client):
 async def test_search_tasks_sends_query_and_done_filter(httpx_mock, client):
     url = str(
         httpx.URL(f"{BASE_URL}/api/v1/tasks").copy_merge_params(
-            {"s": "garage", "filter": "done = false", "per_page": "20"}
+            {"s": "garage", "filter": "done = false", "page": "1", "per_page": "20"}
         )
     )
     httpx_mock.add_response(
@@ -144,7 +144,7 @@ async def test_search_tasks_sends_query_and_done_filter(httpx_mock, client):
 async def test_search_tasks_omits_filter_when_including_done(httpx_mock, client):
     url = str(
         httpx.URL(f"{BASE_URL}/api/v1/tasks").copy_merge_params(
-            {"s": "garage", "per_page": "100"}
+            {"s": "garage", "page": "1", "per_page": "50"}
         )
     )
     httpx_mock.add_response(method="GET", url=url, json=[])
@@ -159,7 +159,8 @@ async def test_search_tasks_passes_filter_expression_and_sort(httpx_mock, client
         httpx.URL(f"{BASE_URL}/api/v1/tasks").copy_merge_params(
             {
                 "filter": "done = false && due_date < now+7d",
-                "per_page": "100",
+                "page": "1",
+                "per_page": "50",
                 "sort_by": "due_date",
             }
         )
@@ -173,7 +174,7 @@ async def test_search_tasks_passes_filter_expression_and_sort(httpx_mock, client
 
     request = httpx_mock.get_requests()[0]
     assert request.url.params["filter"] == "done = false && due_date < now+7d"
-    assert request.url.params["per_page"] == "100"
+    assert request.url.params["per_page"] == "50"
     assert request.url.params["sort_by"] == "due_date"
     assert "s" not in request.url.params
 
@@ -333,9 +334,14 @@ async def test_add_comment_puts_comment_text(httpx_mock, client):
 
 
 async def test_list_tasks_filters_client_side(httpx_mock, client):
+    url = str(
+        httpx.URL(f"{BASE_URL}/api/v1/projects/1/tasks").copy_merge_params(
+            {"page": "1", "per_page": "50"}
+        )
+    )
     httpx_mock.add_response(
         method="GET",
-        url=f"{BASE_URL}/api/v1/projects/1/tasks",
+        url=url,
         json=[
             {"id": 1, "title": "Fix garage door", "done": False},
             {"id": 2, "title": "Buy milk", "done": False},
@@ -348,17 +354,62 @@ async def test_list_tasks_filters_client_side(httpx_mock, client):
     assert [t["id"] for t in tasks] == [1, 4]
 
 
+async def test_list_tasks_paginates_until_short_page(httpx_mock, client):
+    """v2 caps the page at 50 tasks, so the client must keep fetching
+    pages until one comes back short."""
+    page_one = str(
+        httpx.URL(f"{BASE_URL}/api/v1/projects/1/tasks").copy_merge_params(
+            {"per_page": "50", "page": "1"}
+        )
+    )
+    page_two = str(
+        httpx.URL(f"{BASE_URL}/api/v1/projects/1/tasks").copy_merge_params(
+            {"per_page": "50", "page": "2"}
+        )
+    )
+    httpx_mock.add_response(
+        method="GET",
+        url=page_one,
+        json=[{"id": i, "title": f"Task {i}", "done": False} for i in range(1, 51)],
+    )
+    httpx_mock.add_response(
+        method="GET",
+        url=page_two,
+        json=[{"id": 51, "title": "Task 51", "done": False}],
+    )
+    tasks = await client.list_tasks(1)
+
+    assert [t["id"] for t in tasks] == list(range(1, 52))
+
+
+async def test_list_tasks_stops_after_short_page(httpx_mock, client):
+    httpx_mock.add_response(
+        method="GET",
+        url=str(
+            httpx.URL(f"{BASE_URL}/api/v1/projects/1/tasks").copy_merge_params(
+                {"page": "1", "per_page": "50"}
+            )
+        ),
+        json=[{"id": i, "title": f"Task {i}", "done": False} for i in range(3)],
+    )
+    tasks = await client.list_tasks(1)
+
+    assert len(tasks) == 3
+    assert len(httpx_mock.get_requests()) == 1
+
+
 async def test_list_tasks_hides_done_by_default(httpx_mock, client):
     done_payload = [
         {"id": 1, "title": "Open", "done": False},
         {"id": 3, "title": "Closed", "done": True},
     ]
-    httpx_mock.add_response(
-        method="GET", url=f"{BASE_URL}/api/v1/projects/1/tasks", json=done_payload
+    done_url = str(
+        httpx.URL(f"{BASE_URL}/api/v1/projects/1/tasks").copy_merge_params(
+            {"page": "1", "per_page": "50"}
+        )
     )
-    httpx_mock.add_response(
-        method="GET", url=f"{BASE_URL}/api/v1/projects/1/tasks", json=done_payload
-    )
+    httpx_mock.add_response(method="GET", url=done_url, json=done_payload)
+    httpx_mock.add_response(method="GET", url=done_url, json=done_payload)
     tasks = await client.list_tasks(1)
     assert [t["id"] for t in tasks] == [1]
 
@@ -367,10 +418,15 @@ async def test_list_tasks_hides_done_by_default(httpx_mock, client):
 
 
 async def test_list_tasks_caps_at_limit(httpx_mock, client):
+    full_page = [{"id": i, "title": f"T{i}", "done": False} for i in range(10)]
     httpx_mock.add_response(
         method="GET",
-        url=f"{BASE_URL}/api/v1/projects/1/tasks",
-        json=[{"id": i, "title": f"T{i}", "done": False} for i in range(10)],
+        url=str(
+            httpx.URL(f"{BASE_URL}/api/v1/projects/1/tasks").copy_merge_params(
+                {"page": "1", "per_page": "3"}
+            )
+        ),
+        json=full_page,
     )
     tasks = await client.list_tasks(1, limit=3)
     assert len(tasks) == 3

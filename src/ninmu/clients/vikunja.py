@@ -20,6 +20,12 @@ class NoKanbanView(UpstreamError):
 
 
 class VikunjaClient:
+    # Vikunja v2 caps the response page size at 50 and ignores larger
+    # per_page values, so the client paginates in pages of 50.
+    _MAX_PAGE_SIZE = 50
+    # Hard stop for pagination so a misbehaving server cannot keep the
+    # client fetching forever (20 pages = 1000 tasks).
+    _MAX_PAGES = 20
     """Focused HTTP client for the Vikunja REST API."""
 
     def __init__(self, base_url: str, token: str, timeout: float = 30.0) -> None:
@@ -123,6 +129,34 @@ class VikunjaClient:
             "PUT", f"/api/v1/projects/{project_id}/tasks", json=payload
         )
 
+    async def _get_all_pages(
+        self, path: str, params: dict, page_size: int, max_items: int
+    ) -> list[dict]:
+        """Fetch a list endpoint across all its pages.
+
+        Keeps fetching while the server sends back full pages, so a
+        short page marks the end of the list. Stops early once
+        ``max_items`` are collected. ``page_size`` is written into
+        ``per_page`` and ``page`` counts from 1.
+        """
+        items: list[dict] = []
+        for page in range(1, self._MAX_PAGES + 1):
+            if len(items) >= max_items:
+                return items
+            response = await self._request(
+                "GET",
+                path,
+                params={
+                    **params,
+                    "page": page,
+                    "per_page": page_size,
+                },
+            )
+            items.extend(response)
+            if len(response) < page_size:
+                return items
+        return items
+
     async def search_tasks(
         self,
         query: str | None = None,
@@ -147,7 +181,8 @@ class VikunjaClient:
         include_done : bool
             Include completed tasks (default: hide them via a filter).
         """
-        params: dict = {"per_page": limit}
+        page_size = min(limit, self._MAX_PAGE_SIZE)
+        params: dict = {}
         if query:
             params["s"] = query
         if not include_done:
@@ -159,7 +194,7 @@ class VikunjaClient:
             params["filter"] = filter_expr
         if sort_by:
             params["sort_by"] = sort_by
-        tasks = await self._request("GET", "/api/v1/tasks", params=params)
+        tasks = await self._get_all_pages("/api/v1/tasks", params, page_size, limit)
         return tasks[:limit]
 
     async def list_tasks(
@@ -185,7 +220,10 @@ class VikunjaClient:
         limit : int
             Maximum number of tasks to return.
         """
-        tasks = await self._request("GET", f"/api/v1/projects/{project_id}/tasks")
+        page_size = min(limit, self._MAX_PAGE_SIZE)
+        tasks = await self._get_all_pages(
+            f"/api/v1/projects/{project_id}/tasks", {}, page_size, limit
+        )
         matched: list[dict] = []
         needle = search.lower() if search else None
         for task in tasks:
