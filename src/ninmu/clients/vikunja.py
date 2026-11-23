@@ -166,11 +166,13 @@ class VikunjaClient:
         self,
         project_id: int,
         search: str | None = None,
-        bucket_id: int | None = None,
         include_done: bool = False,
         limit: int = 100,
     ) -> list[dict]:
         """List tasks in a project, filtered client-side.
+
+        Note: v2 has no per-bucket task listing, so there is no bucket
+        filter; a task's bucket is only visible via its kanban view.
 
         Parameters
         ----------
@@ -178,8 +180,6 @@ class VikunjaClient:
             Project to list tasks from.
         search : str, optional
             Case-insensitive substring match on title and description.
-        bucket_id : int, optional
-            Only tasks currently in this kanban bucket.
         include_done : bool
             Include completed tasks (default: hide them).
         limit : int
@@ -190,8 +190,6 @@ class VikunjaClient:
         needle = search.lower() if search else None
         for task in tasks:
             if not include_done and task.get("done"):
-                continue
-            if bucket_id is not None and task.get("bucket_id") != bucket_id:
                 continue
             if needle:
                 haystack = (
@@ -208,6 +206,31 @@ class VikunjaClient:
         """Fetch one task by id."""
         return await self._request("GET", f"/api/v1/tasks/{task_id}")
 
+    async def _replace_task(self, task_id: int, field: str, value: Any) -> dict:
+        """Update one field of a task via v2's full-replacement update.
+
+        Vikunja v2 treats ``POST /api/v1/tasks/{id}`` as a full
+        replacement of the task, so partial updates would wipe the other
+        fields. Fetch the task, change one field, post the whole object.
+
+        Parameters
+        ----------
+        task_id : int
+            Task to update.
+        field : str
+            Task field to change (e.g. ``"title"``).
+        value : Any
+            New value for the field.
+
+        Returns
+        -------
+        dict
+            The updated task.
+        """
+        task = await self.get_task(task_id)
+        task[field] = value
+        return await self._request("POST", f"/api/v1/tasks/{task_id}", json=task)
+
     async def update_task(
         self,
         task_id: int,
@@ -216,36 +239,50 @@ class VikunjaClient:
         due_date: str | None = None,
         priority: int | None = None,
     ) -> dict:
-        """Update a task's fields; only the provided ones are sent.
+        """Update a task's fields; only the provided ones change.
 
-        Vikunja treats ``PUT /api/v1/tasks/{id}`` as a partial update, so
-        omitted fields keep their current value.
+        Each provided field is applied via the v2 full-replacement
+        update (see ``_replace_task``), so omitted fields keep their
+        current value.
         """
-        payload: dict = {}
-        if title is not None:
-            payload["title"] = title
-        if description is not None:
-            payload["description"] = description
-        if due_date is not None:
-            payload["due_date"] = due_date
-        if priority is not None:
-            payload["priority"] = priority
-        return await self._request("PUT", f"/api/v1/tasks/{task_id}", json=payload)
+        task = await self.get_task(task_id)
+        changed = False
+        for field, value in (
+            ("title", title),
+            ("description", description),
+            ("due_date", due_date),
+            ("priority", priority),
+        ):
+            if value is not None:
+                task[field] = value
+                changed = True
+        if not changed:
+            return task
+        return await self._request("POST", f"/api/v1/tasks/{task_id}", json=task)
 
     async def set_task_done(self, task_id: int, done: bool) -> dict:
         """Mark a task done or reopen it."""
-        return await self._request(
-            "PUT", f"/api/v1/tasks/{task_id}", json={"done": done}
-        )
+        return await self._replace_task(task_id, "done", done)
 
     async def set_bucket(self, task_id: int, bucket_id: int) -> dict:
         """Move a task to a kanban bucket (its "status").
 
-        Vikunja has no ``POST /tasks/{id}`` route; partial updates go
-        through ``PUT``.
+        In Vikunja v2 bucket membership lives per view, so the client
+        resolves the task's project and that project's kanban view,
+        then posts the move to the view's bucket.
         """
+        task = await self.get_task(task_id)
+        project_id = task["project_id"]
+        views = await self._request("GET", f"/api/v1/projects/{project_id}/views")
+        view_id = self._pick_kanban_view(views)
         return await self._request(
-            "PUT", f"/api/v1/tasks/{task_id}", json={"bucket_id": bucket_id}
+            "POST",
+            f"/api/v1/projects/{project_id}/views/{view_id}/buckets/{bucket_id}/tasks",
+            json={
+                "task_id": task_id,
+                "project_view_id": view_id,
+                "bucket_id": bucket_id,
+            },
         )
 
     async def add_comment(self, task_id: int, comment: str) -> dict:

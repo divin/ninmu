@@ -221,13 +221,13 @@ def build_server(
         name="task_list",
         description=(
             "List tasks in a project to find the one you want to update. "
-            "Optional: search text, bucket_id filter, include_done (default hides done tasks), limit."
+            "Optional: search text, include_done (default hides done tasks), limit. "
+            "Bucket (status) is not a filter: v2 has no per-bucket listing."
         ),
     )
     async def task_list(
         project_id: int,
         search: str | None = None,
-        bucket_id: int | None = None,
         include_done: bool = False,
         limit: int | None = None,
     ) -> str:
@@ -238,7 +238,6 @@ def build_server(
             vikunja.list_tasks(
                 project_id,
                 search=search,
-                bucket_id=bucket_id,
                 include_done=include_done,
                 limit=limit,
             )

@@ -69,12 +69,8 @@ class FakeVikunja:
             },
         ]
 
-    async def list_tasks(
-        self, project_id, search=None, bucket_id=None, include_done=False, limit=100
-    ):
-        self.calls.append(
-            ("list_tasks", project_id, search, bucket_id, include_done, limit)
-        )
+    async def list_tasks(self, project_id, search=None, include_done=False, limit=100):
+        self.calls.append(("list_tasks", project_id, search, include_done, limit))
         return [
             {"id": 1, "title": "Fix garage door", "done": False, "bucket_id": 6},
             {"id": 2, "title": "Buy milk", "done": False, "bucket_id": 5},
@@ -282,7 +278,7 @@ async def test_task_list_terse_lines_and_notice(client, fakes):
 
 async def test_task_list_caps_limit_at_max(client, fakes):
     await _call(client, "task_list", project_id=1, limit=500)
-    assert fakes[0].calls[-1][5] == 100
+    assert fakes[0].calls[-1][4] == 100
 
 
 async def test_task_set_bucket_reports_move(client, fakes):
@@ -478,11 +474,9 @@ async def test_bucket_list_says_no_kanban_view_when_absent(config, fakes):
 async def test_task_list_shows_due_and_priority_and_skips_null_buckets(config, fakes):
     class Bucketless(FakeVikunja):
         async def list_tasks(
-            self, project_id, search=None, bucket_id=None, include_done=False, limit=100
+            self, project_id, search=None, include_done=False, limit=100
         ):
-            self.calls.append(
-                ("list_tasks", project_id, search, bucket_id, include_done, limit)
-            )
+            self.calls.append(("list_tasks", project_id, search, include_done, limit))
             return [
                 {
                     "id": 7,
