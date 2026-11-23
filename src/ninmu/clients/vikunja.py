@@ -221,8 +221,14 @@ class VikunjaClient:
             Maximum number of tasks to return.
         """
         page_size = min(limit, self._MAX_PAGE_SIZE)
+        params: dict = {}
+        if search:
+            # v2 honours the server-side ``s`` filter, so searching does
+            # not stop at the first page window; the client-side filter
+            # below still trims any extra fields the server matches.
+            params["s"] = search
         tasks = await self._get_all_pages(
-            f"/api/v1/projects/{project_id}/tasks", {}, page_size, limit
+            f"/api/v1/projects/{project_id}/tasks", params, page_size, limit
         )
         matched: list[dict] = []
         needle = search.lower() if search else None

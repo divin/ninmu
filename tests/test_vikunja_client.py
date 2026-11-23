@@ -333,10 +333,33 @@ async def test_add_comment_puts_comment_text(httpx_mock, client):
     assert comment["id"] == 9
 
 
+async def test_list_tasks_searches_server_side(httpx_mock, client):
+    """With a search term, the client pins Vikunja's server-side ``s``
+    filter so results are not limited to the first page window."""
+    url = str(
+        httpx.URL(f"{BASE_URL}/api/v1/projects/1/tasks").copy_merge_params(
+            {"s": "garage", "page": "1", "per_page": "50"}
+        )
+    )
+    httpx_mock.add_response(
+        method="GET",
+        url=url,
+        json=[
+            {"id": 1, "title": "Fix garage door", "done": False},
+            {"id": 9, "title": "Unrelated", "done": False},
+        ],
+    )
+    tasks = await client.list_tasks(1, search="garage")
+
+    request = httpx_mock.get_requests()[0]
+    assert request.url.params["s"] == "garage"
+    assert [t["id"] for t in tasks] == [1]
+
+
 async def test_list_tasks_filters_client_side(httpx_mock, client):
     url = str(
         httpx.URL(f"{BASE_URL}/api/v1/projects/1/tasks").copy_merge_params(
-            {"page": "1", "per_page": "50"}
+            {"s": "garage", "page": "1", "per_page": "50"}
         )
     )
     httpx_mock.add_response(
